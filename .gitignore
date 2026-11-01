@@ -1,7 +1,15 @@
+# Dependencies
 node_modules/
+
+# Secrets & Environment Files (NEVER COMMIT)
 .env
-.env.*
-temp_uploads/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build artifacts & temp files
 dist/
+temp_uploads/
 .vercel/
 *.log
