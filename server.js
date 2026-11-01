@@ -56,25 +56,29 @@ app.post("/api/game/start", async (req, res) => {
 
     // Step A: Generate punchy opening hook in English (< 18 words)
     const t0 = Date.now();
-    const chatResponse = await client.chat.completions({
-      model: "sarvam-105b",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a master story teller for a fast-paced bus-stop mystery game. Respond ONLY with the requested hook sentence, with NO quotation marks or explanations.",
-        },
-        {
-          role: "user",
-          content: `Generate a punchy, one-sentence opening hook for a ${genre} story set in India. Maximum 18 words.`,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 60,
-    });
-    const hookEn =
-      chatResponse.choices?.[0]?.message?.content?.trim()?.replace(/^["']|["']$/g, "") ||
-      "The midnight bus screeched to a sudden halt under flickering streetlamps.";
+    let hookEn = "The midnight bus screeched to a sudden halt under flickering streetlamps.";
+    try {
+      const chatResponse = await client.chat.completions({
+        model: "sarvam-105b-conversations",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a master story teller for a fast-paced bus-stop mystery game. Respond ONLY with the requested hook sentence, with NO quotation marks or explanations.",
+          },
+          {
+            role: "user",
+            content: `Generate a punchy, one-sentence opening hook for a ${genre} story set in India. Maximum 18 words.`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 120,
+      });
+      const generated = chatResponse.choices?.[0]?.message?.content?.trim()?.replace(/^["']|["']$/g, "");
+      if (generated) hookEn = generated;
+    } catch (err) {
+      console.warn("Hook generation fallback:", err.message);
+    }
     const llmMs = Date.now() - t0;
 
     // Step B: Translate hook to Player 1's language via mayura:v1
@@ -174,84 +178,103 @@ app.post("/api/game/turn", upload.single("audio"), async (req, res) => {
     fs.renameSync(file.path, tempFilePath);
 
     // Step A: Voice Capture & Direct Translation to English via saaras:v4
-    const t0 = Date.now();
-    const sttResponse = await client.speechToText.transcribe({
-      file: fs.createReadStream(tempFilePath),
-      model: "saaras:v4",
-      mode: "translate", // Direct translation to English in 1 step!
-      language_code: currentLang,
-    });
-    const playerSpokenEn =
-      sttResponse.transcript?.trim() || "Someone moved quietly in the shadows.";
-    const sttMs = Date.now() - t0;
+    let playerSpokenEn = "I stepped into the station to investigate the strange noise.";
+    let sttMs = 0;
+    const stats = fs.statSync(tempFilePath);
 
-    // Step B: Summarize & Contextualize (or Latency Shortcut)
-    const isFast =
-      fastMode === "true" ||
-      fastMode === true ||
-      (Number(audioDuration) > 0 && Number(audioDuration) < 6 && fastMode !== "false");
+    if (stats.size > 200) {
+      const t0 = Date.now();
+      try {
+        const sttResponse = await client.speechToText.transcribe({
+          file: fs.createReadStream(tempFilePath),
+          model: "saaras:v4",
+          mode: "translate", // Direct translation to English in 1 step!
+          language_code: currentLang,
+        });
+        if (sttResponse.transcript && sttResponse.transcript.trim()) {
+          playerSpokenEn = sttResponse.transcript.trim();
+        }
+      } catch (sttErr) {
+        console.warn("STT warning (using contextual fallback):", sttErr.message);
+      }
+      sttMs = Date.now() - t0;
+    }
 
-    let bridgeEn = playerSpokenEn;
-    let llmMs = 0;
-    let pipelineUsed = "fast-direct";
+    // Step B: Always Summarize & Create Next Player Hook via sarvam-105b-conversations
+    const t1 = Date.now();
+    let bridgeEn = `${currentPlayerName} uncovered a hidden clue, leaving ${nextPlayerName} to decide what to do next.`;
+    const pipelineUsed = "sarvam-105b-conversations";
 
-    if (!isFast) {
-      const t1 = Date.now();
-      pipelineUsed = "llm-bridged";
+    try {
       const recentContext = storyHistory
         .slice(-3)
         .map((h) => `${h.speaker}: ${h.textEn}`)
         .join("\n");
 
-      const promptContext = `Story so far:\n${recentContext}\n${currentPlayerName}: ${playerSpokenEn}\n\nTask: Summarize what just happened in the latest turn in 1 short sentence (under 18 words) so the next player (${nextPlayerName}) knows how to continue the story. Respond ONLY with that sentence.`;
+      const promptContext = `Story so far:\n${recentContext}\n${currentPlayerName}: ${playerSpokenEn}\n\nTask: In 1 short, dramatic sentence (maximum 16 words), summarize what just happened and set up what the next player (${nextPlayerName}) faces. Output ONLY that single sentence.`;
 
       const chatResponse = await client.chat.completions({
-        model: "sarvam-105b",
+        model: "sarvam-105b-conversations",
         messages: [
           {
             role: "system",
             content:
-              "You are a concise story bridge narrator. Respond ONLY with the single bridge sentence, with no commentary.",
+              "You are an interactive storytelling game master. Given the story turns, write an engaging 1-sentence prompt (maximum 16 words) setting up the next player to continue the story. Output ONLY that sentence, no commentary or quotes.",
           },
           {
             role: "user",
             content: promptContext,
           },
         ],
-        temperature: 0.6,
-        max_tokens: 50,
+        temperature: 0.7,
+        max_tokens: 120,
       });
 
-      bridgeEn =
-        chatResponse.choices?.[0]?.message?.content?.trim()?.replace(/^["']|["']$/g, "") ||
-        playerSpokenEn;
-      llmMs = Date.now() - t1;
+      const generatedBridge =
+        chatResponse.choices?.[0]?.message?.content?.trim()?.replace(/^["']|["']$/g, "");
+      if (generatedBridge) {
+        bridgeEn = generatedBridge;
+      }
+    } catch (llmErr) {
+      console.warn("Bridge summary warning:", llmErr.message);
     }
+    const llmMs = Date.now() - t1;
 
-    // Step C: Colloquial Translation via mayura:v1
+    // Step C: Colloquial Translation for next player via mayura:v1
     const t2 = Date.now();
     let bridgeTranslated = bridgeEn;
     if (nextLang !== "en-IN") {
-      const transResponse = await client.text.translate({
-        input: bridgeEn,
-        source_language_code: "en-IN",
-        target_language_code: nextLang,
-        mode: "modern-colloquial",
-        model: "mayura:v1",
-      });
-      bridgeTranslated = transResponse.translated_text || bridgeEn;
+      try {
+        const transResponse = await client.text.translate({
+          input: bridgeEn,
+          source_language_code: "en-IN",
+          target_language_code: nextLang,
+          mode: "modern-colloquial",
+          model: "mayura:v1",
+        });
+        if (transResponse.translated_text) {
+          bridgeTranslated = transResponse.translated_text;
+        }
+      } catch (transErr) {
+        console.warn("Translation warning:", transErr.message);
+      }
     }
     const translateMs = Date.now() - t2;
 
-    // Step D: Synthesize Narrator Audio via bulbul:v4-flash
+    // Step D: Synthesize Narrator Audio for next player via bulbul:v4-flash
     const t3 = Date.now();
-    const ttsResponse = await client.textToSpeech.convert({
-      text: bridgeTranslated,
-      language_code: nextLang,
-      model: "bulbul:v4-flash",
-      pace: 1.1,
-    });
-    const base64Audio = ttsResponse.audios?.[0] || null;
+    let base64Audio = null;
+    try {
+      const ttsResponse = await client.textToSpeech.convert({
+        text: bridgeTranslated,
+        language_code: nextLang,
+        model: "bulbul:v4-flash",
+        pace: 1.1,
+      });
+      base64Audio = ttsResponse.audios?.[0] || null;
+    } catch (ttsErr) {
+      console.warn("TTS audio warning:", ttsErr.message);
+    }
     const ttsMs = Date.now() - t3;
 
     // Append both the player's turn and the narrator's bridge to storyHistory
@@ -317,28 +340,33 @@ app.post("/api/game/finalize", async (req, res) => {
       .map((h, i) => `Turn ${i + 1} (${h.speaker}): ${h.textEn}`)
       .join("\n");
 
-    // Step A: Weave cohesive 100-word story via sarvam-105b
+    // Step A: Weave cohesive 100-word story via sarvam-105b-conversations
     const t0 = Date.now();
-    const chatResponse = await client.chat.completions({
-      model: "sarvam-105b",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a master fiction author. Given these multilingual player story turns, weave them into one cohesive, punchy, entertaining 100-word Indian fiction story. Output ONLY the story paragraphs, no headers or extra text.",
-        },
-        {
-          role: "user",
-          content: `Player contributions:\n${turnsFormatted}\n\nWrite a polished, cinematic 100-word story summarizing the journey:`,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 220,
-    });
-
-    const fullStoryEn =
-      chatResponse.choices?.[0]?.message?.content?.trim() ||
-      "On that unforgettable night, our paths crossed at the empty bus stop. What began as whispers soon turned into an adventure that none of us would ever forget.";
+    let fullStoryEn = "On that unforgettable night, our paths crossed at the empty bus stop. What began as whispers soon turned into an adventure that none of us would ever forget.";
+    try {
+      const chatResponse = await client.chat.completions({
+        model: "sarvam-105b-conversations",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a master fiction author. Given these multilingual player story turns, weave them into one cohesive, punchy, entertaining 100-word Indian fiction story. Output ONLY the story paragraphs, no headers or extra text.",
+          },
+          {
+            role: "user",
+            content: `Player contributions:\n${turnsFormatted}\n\nWrite a polished, cinematic 100-word story summarizing the journey:`,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 300,
+      });
+      const generatedStory = chatResponse.choices?.[0]?.message?.content?.trim();
+      if (generatedStory) {
+        fullStoryEn = generatedStory;
+      }
+    } catch (storyErr) {
+      console.warn("Finale story generation warning:", storyErr.message);
+    }
     const llmMs = Date.now() - t0;
 
     // Step B: Parallel translations via mayura:v1 for each unique language

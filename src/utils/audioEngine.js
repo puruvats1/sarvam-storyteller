@@ -1,12 +1,16 @@
 /**
  * AudioEngine manages Web Audio context, microphone streaming,
  * real-time frequency analysis for the Orb, and audio playback.
+ * 
+ * NOTE: Microphone input is analyzed strictly in an isolated AnalyserNode
+ * and NEVER routed to ctx.destination (speakers) to prevent acoustic feedback/playback.
  */
 
 class AudioEngine {
   constructor() {
     this.ctx = null;
-    this.analyser = null;
+    this.micAnalyser = null;
+    this.speakerAnalyser = null;
     this.micStream = null;
     this.micSource = null;
     this.mediaRecorder = null;
@@ -21,10 +25,18 @@ class AudioEngine {
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       this.ctx = new AudioCtx();
-      this.analyser = this.ctx.createAnalyser();
-      this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.8;
-      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+
+      // Isolated analyser for microphone (NEVER connected to destination)
+      this.micAnalyser = this.ctx.createAnalyser();
+      this.micAnalyser.fftSize = 256;
+      this.micAnalyser.smoothingTimeConstant = 0.8;
+
+      // Isolated analyser for speaker audio playback
+      this.speakerAnalyser = this.ctx.createAnalyser();
+      this.speakerAnalyser.fftSize = 256;
+      this.speakerAnalyser.smoothingTimeConstant = 0.8;
+
+      this.dataArray = new Uint8Array(128);
     }
     if (this.ctx.state === "suspended") {
       this.ctx.resume();
@@ -62,10 +74,7 @@ class AudioEngine {
   }
 
   /**
-   * Start recording microphone and connect stream to analyser
-   * @param {Object} options
-   * @param {Function} options.onSilenceDetected - Called when 1.8s silence is detected after speech
-   * @param {Function} options.onTurnTimeout - Called when 15s turn limit expires
+   * Start recording microphone and connect stream ONLY to micAnalyser (NOT to speakers)
    */
   async startMicRecording({ onSilenceDetected, onTurnTimeout } = {}) {
     const ctx = this.ensureContext();
@@ -79,17 +88,19 @@ class AudioEngine {
           sampleRate: 16000,
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         },
       });
 
       this.micSource = ctx.createMediaStreamSource(this.micStream);
-      this.micSource.connect(this.analyser);
+      // CONNECT ONLY TO MIC ANALYSER - NEVER TO ctx.destination!
+      this.micSource.connect(this.micAnalyser);
 
-      // Set up MediaRecorder
+      // Check supported MIME types for recording
       const mimeTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/wav"];
       let selectedMime = "";
       for (const mime of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(mime)) {
+        if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(mime)) {
           selectedMime = mime;
           break;
         }
@@ -112,7 +123,7 @@ class AudioEngine {
       // VAD logic: detect speech start and 1.8s continuous silence
       let speechStarted = false;
       let silenceStart = null;
-      const vadThreshold = 14; // Average frequency threshold for speech
+      const vadThreshold = 14;
 
       this.vadInterval = setInterval(() => {
         if (!this.isRecording) return;
@@ -125,14 +136,13 @@ class AudioEngine {
           if (!silenceStart) {
             silenceStart = Date.now();
           } else if (Date.now() - silenceStart >= 1800) {
-            // 1.8 seconds of silence detected after speech!
             clearInterval(this.vadInterval);
             if (onSilenceDetected) onSilenceDetected();
           }
         }
       }, 100);
 
-      // Max 15s turn timeout
+      // 15s turn timeout
       this.turnTimer = setTimeout(() => {
         if (this.isRecording && onTurnTimeout) {
           onTurnTimeout();
@@ -161,16 +171,25 @@ class AudioEngine {
     return new Promise((resolve) => {
       if (!this.mediaRecorder || this.mediaRecorder.state === "inactive") {
         this.cleanupMic();
-        resolve({ blob: null, duration: durationSeconds });
+        const mime = "audio/webm";
+        const blob = this.recordedChunks.length > 0 ? new Blob(this.recordedChunks, { type: mime }) : null;
+        resolve({ blob, duration: durationSeconds });
         return;
       }
 
       this.mediaRecorder.onstop = () => {
         const mime = this.mediaRecorder.mimeType || "audio/webm";
-        const blob = new Blob(this.recordedChunks, { type: mime });
+        const blob = this.recordedChunks.length > 0 ? new Blob(this.recordedChunks, { type: mime }) : null;
         this.cleanupMic();
         resolve({ blob, duration: durationSeconds });
       };
+
+      // Request any final data buffered in the recorder
+      try {
+        if (this.mediaRecorder.state === "recording") {
+          this.mediaRecorder.requestData();
+        }
+      } catch {}
 
       this.mediaRecorder.stop();
     });
@@ -190,9 +209,7 @@ class AudioEngine {
   }
 
   /**
-   * Play base64 WAV/MP3 audio and connect to AnalyserNode
-   * @param {string} base64Audio
-   * @param {Function} onEnded
+   * Play base64 WAV/MP3 audio and connect to speakerAnalyser for Orb animation
    */
   async playBase64Audio(base64Audio, onEnded) {
     if (!base64Audio) {
@@ -209,10 +226,11 @@ class AudioEngine {
 
     try {
       this.audioSourceNode = ctx.createMediaElementSource(audio);
-      this.audioSourceNode.connect(this.analyser);
-      this.analyser.connect(ctx.destination);
+      // Connect to speakerAnalyser for visualization
+      this.audioSourceNode.connect(this.speakerAnalyser);
+      // Connect to speakers for audible output
+      this.audioSourceNode.connect(ctx.destination);
     } catch (err) {
-      // In some browsers, cross-origin/source issues fallback to direct play
       console.debug("Audio source binding fallback:", err);
     }
 
@@ -221,12 +239,19 @@ class AudioEngine {
       if (onEnded) onEnded();
     };
 
-    audio.onerror = () => {
+    audio.onerror = (e) => {
+      console.warn("Audio element error:", e);
       this.stopAudioPlayback();
       if (onEnded) onEnded();
     };
 
-    await audio.play();
+    try {
+      await audio.play();
+    } catch (err) {
+      console.warn("audio.play() prevented or failed:", err);
+      this.stopAudioPlayback();
+      if (onEnded) onEnded();
+    }
   }
 
   stopAudioPlayback() {
@@ -244,13 +269,19 @@ class AudioEngine {
   }
 
   /**
-   * Returns current frequency values (0 to 255)
+   * Returns current frequency values (0 to 255) from the active analyser
    */
   getFrequencyData() {
-    if (!this.analyser || !this.dataArray) {
+    if (!this.dataArray) {
       return new Uint8Array(64);
     }
-    this.analyser.getByteFrequencyData(this.dataArray);
+
+    const activeAnalyser = this.isRecording ? this.micAnalyser : this.speakerAnalyser;
+    if (!activeAnalyser) {
+      return new Uint8Array(64);
+    }
+
+    activeAnalyser.getByteFrequencyData(this.dataArray);
     return this.dataArray;
   }
 

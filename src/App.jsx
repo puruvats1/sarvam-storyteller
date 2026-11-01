@@ -123,29 +123,30 @@ export default function App() {
   const triggerAiSpeakingState = (spokenText, englishSub, base64Audio) => {
     setGameState("STATE_AI_SPEAKING");
     setCurrentRibbonText(spokenText || "");
-    setCurrentRibbonSub(englishSub !== spokenText ? englishSub : "");
+    setCurrentRibbonSub(englishSub && englishSub !== spokenText ? englishSub : "");
 
     if (base64Audio) {
       audioEngine.playBase64Audio(base64Audio, () => {
-        triggerListeningState();
+        triggerListeningState(spokenText, englishSub);
       });
     } else {
       setTimeout(() => {
-        triggerListeningState();
-      }, 3500);
+        triggerListeningState(spokenText, englishSub);
+      }, 4000);
     }
   };
 
   // 4. PLAYER MIC CAPTURE (STATE_LISTENING)
-  const triggerListeningState = async () => {
+  const triggerListeningState = async (promptText = currentRibbonText, promptSub = currentRibbonSub) => {
     if (hasPendingFinaleRef.current) {
       triggerFinaleState();
       return;
     }
 
     setGameState("STATE_LISTENING");
-    setCurrentRibbonText(`Pass mic to ${activePlayer.name}`);
-    setCurrentRibbonSub(`Speak in ${getLangNative(activePlayer.lang)} (${activePlayer.lang})`);
+    // Preserve the summarized and translated prompt so the current speaker can read it!
+    if (promptText) setCurrentRibbonText(promptText);
+    if (promptSub) setCurrentRibbonSub(promptSub);
     setTurnProgress(1);
 
     await audioEngine.playChime();
@@ -224,9 +225,10 @@ export default function App() {
 
       triggerAiSpeakingState(data.bridgeTranslated, data.bridgeEn, data.base64Audio);
     } catch (err) {
-      console.error("Turn processing error:", err);
+      console.warn("Turn processing error (recovering with fallback):", err);
       setActivePlayerIndex(nextPlayerIndex);
-      triggerListeningState();
+      const fallbackPrompt = `${activePlayer.name} shared a dramatic discovery, leaving ${nextPlayer.name} to continue the search.`;
+      triggerAiSpeakingState(fallbackPrompt, fallbackPrompt, null);
     }
   };
 
@@ -348,19 +350,19 @@ export default function App() {
                 {gameState === "STATE_AI_SPEAKING" && (
                   <span className="flex items-center gap-1.5 text-[#7274ED]">
                     <Volume2 className="w-4 h-4 animate-bounce" />
-                    <span>Story Master Speaking ({activePlayer.lang})</span>
+                    <span>Story Master Prompt for {activePlayer.name} ({getLangNative(activePlayer.lang)})</span>
                   </span>
                 )}
                 {gameState === "STATE_LISTENING" && (
                   <span className="flex items-center gap-1.5 text-[#FF8B8B]">
                     <Mic className="w-4 h-4 animate-pulse" />
-                    <span>Listening to {activePlayer.name}...</span>
+                    <span>Listening to {activePlayer.name}... (Speak in {getLangNative(activePlayer.lang)})</span>
                   </span>
                 )}
                 {gameState === "STATE_BRIDGING" && (
                   <span className="flex items-center gap-1.5 text-[#1FA7E1]">
                     <Sparkles className="w-4 h-4 animate-spin" />
-                    <span>Handoff to {nextPlayer.name}...</span>
+                    <span>Summarizing & Translating for {nextPlayer.name}...</span>
                   </span>
                 )}
                 {gameState === "STATE_INIT_ROUND" && (
@@ -370,13 +372,19 @@ export default function App() {
             </div>
 
             {/* Tactile 3D Transcript / Speech Card */}
-            <div className="card-3d px-6 py-4 max-w-lg w-full min-h-[76px] flex flex-col justify-center gap-1 shadow-sm">
-              <div className="text-sm sm:text-base font-extrabold text-slate-800 leading-snug">
+            <div className="card-3d px-6 py-4 max-w-lg w-full min-h-[96px] flex flex-col justify-center gap-2 text-left shadow-sm">
+              <div className="text-[11px] uppercase font-black text-slate-400 tracking-wider flex items-center justify-between">
+                <span>{gameState === "STATE_AI_SPEAKING" ? "Story Master Prompt" : "Continue From This Hook"}</span>
+                <span className="text-[11px] font-bold text-[#1FA7E1] bg-[#F0F6FA] px-2 py-0.5 rounded-full border border-[#e2edf5]">
+                  {getLangNative(activePlayer.lang)}
+                </span>
+              </div>
+              <div className="text-base sm:text-lg font-black text-slate-800 leading-snug">
                 "{currentRibbonText}"
               </div>
               {currentRibbonSub && (
-                <div className="text-xs text-slate-400 font-bold italic">
-                  ({currentRibbonSub})
+                <div className="text-xs text-slate-500 font-bold italic pt-1.5 border-t border-[#f0f6fa]">
+                  English: "{currentRibbonSub}"
                 </div>
               )}
             </div>
