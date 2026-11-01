@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #f0f6fa;
+    color: #2c3e50;
+    font-family: 'Nunito', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+  }
+}
+
+/* Reference Image 06 & 07 Pill Banners */
+.pill-banner {
+  background-color: #ffffff;
+  border: 2.5px solid #6ed1cf;
+  box-shadow: 0 4px 0 #4db3b1;
+  border-radius: 9999px;
+  color: #1a928f;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* Reference Tactile 3D Buttons & Elements */
+.btn-3d {
+  position: relative;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+  user-select: none;
+}
+
+.btn-3d:active {
+  transform: translateY(3px) !important;
+}
+
+/* Tactile 3D Cards */
+.card-3d {
+  background: #ffffff;
+  border: 2px solid #e2edf5;
+  box-shadow: 0 6px 0 #d0e0ed;
+  border-radius: 24px;
+}
+
+.card-3d-elevated {
+  background: #ffffff;
+  border: 2px solid #e2edf5;
+  box-shadow: 0 10px 24px -4px rgba(114, 116, 237, 0.08), 0 6px 0 #d0e0ed;
+  border-radius: 28px;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@keyframes bounceSlow {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.animate-bounce-slow {
+  animation: bounceSlow 3s ease-in-out infinite;
+}
