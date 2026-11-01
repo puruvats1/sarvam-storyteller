@@ -62,7 +62,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 🚀 Deploying on Vercel
 
-1. Push this repository to GitHub.
-2. Import the project into your Vercel Dashboard.
-3. Add the `SARVAM_API_KEY` Environment Variable under **Settings ➔ Environment Variables**.
-4. Deploy!
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/puruvats1/sarvam-storyteller&env=SARVAM_API_KEY)
+
+1. Click the **Deploy with Vercel** button above or import `puruvats1/sarvam-storyteller` in your Vercel Dashboard.
+2. Enter your `SARVAM_API_KEY` under the Environment Variables prompt.
+3. Vercel will automatically build the Vite frontend and deploy the serverless API routes.
